@@ -77,21 +77,21 @@ class SyncCommand extends Command
         return DB::transaction(function () {
             try {
                 // Phase 1: Download
-                $filePath = $this->downloadPhase();
+                $downloadResult = $this->downloadPhase();
 
-                if ($filePath === null) {
+                if ($downloadResult === null) {
                     return 2; // Download failed
                 }
 
                 // Phase 2: Validate
-                $validationResult = $this->validationPhase($filePath);
+                $validationResult = $this->validationPhase($downloadResult['path']);
 
                 if (! $validationResult['success']) {
                     return 1; // Validation failed
                 }
 
                 // Phase 3: Import
-                $importResult = $this->importPhase($filePath);
+                $importResult = $this->importPhase($downloadResult);
 
                 if (! $importResult['success']) {
                     return 3; // Import failed
@@ -110,11 +110,13 @@ class SyncCommand extends Command
     /**
      * Download phase: Crawl website or use local file.
      */
-    protected function downloadPhase(): ?string
+    protected function downloadPhase(): ?array
     {
         $this->info('Phase 1: Downloading PSGC file...');
 
         $path = $this->option('path');
+        $filename = null;
+        $downloadUrl = null;
 
         if ($path !== null) {
             // Use local file
@@ -126,7 +128,13 @@ class SyncCommand extends Command
                 return null;
             }
 
-            return realpath($path);
+            $filename = basename($path);
+
+            return [
+                'path' => realpath($path),
+                'filename' => $filename,
+                'download_url' => null,
+            ];
         }
 
         // Automatic download
@@ -149,9 +157,16 @@ class SyncCommand extends Command
             return null;
         }
 
+        // Extract filename from URL
+        $filename = basename(parse_url($downloadUrl, PHP_URL_PATH));
+
         $this->success('Download completed successfully.');
 
-        return $filePath;
+        return [
+            'path' => $filePath,
+            'filename' => $filename,
+            'download_url' => $downloadUrl,
+        ];
     }
 
     /**
@@ -189,12 +204,16 @@ class SyncCommand extends Command
     /**
      * Import phase: Parse and import data to database.
      */
-    protected function importPhase(string $filePath): array
+    protected function importPhase(array $downloadResult): array
     {
         $this->newLine();
         $this->info('Phase 3: Importing PSGC data...');
 
-        $importer = new ImportPsgcData($filePath);
+        $importer = new ImportPsgcData(
+            $downloadResult['path'],
+            $downloadResult['filename'],
+            $downloadResult['download_url']
+        );
         $result = $importer->execute();
 
         if (! $result['success']) {
@@ -222,10 +241,11 @@ class SyncCommand extends Command
         $this->line('  Cities/Municipalities: '.$result['cities_municipalities']);
         $this->line('  Barangays: '.$result['barangays']);
 
-        $versionInfo = $this->extractVersion($this->option('path') ?? '');
-        if ($versionInfo['quarter'] !== 'Unknown') {
-            $this->newLine();
-            $this->info('Imported Version: '.$versionInfo['quarter'].' '.$versionInfo['year']);
+        $this->newLine();
+        $this->info('PSGC Version ID: '.$result['psgc_version_id']);
+
+        if (isset($result['quarter']) && isset($result['year'])) {
+            $this->info('Imported Version: '.$result['quarter'].' '.$result['year']);
         }
     }
 

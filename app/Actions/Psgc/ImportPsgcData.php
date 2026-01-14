@@ -4,6 +4,7 @@ namespace App\Actions\Psgc;
 
 use App\Models\Barangay;
 use App\Models\CityMunicipality;
+use App\Models\PsgcVersion;
 use App\Models\Province;
 use App\Models\Region;
 use Illuminate\Support\Facades\DB;
@@ -30,14 +31,26 @@ class ImportPsgcData
 
     protected int $barangaysCount = 0;
 
-    public function __construct(string $filePath)
+    protected ?PsgcVersion $psgcVersion = null;
+
+    protected ?string $filename = null;
+
+    protected ?string $downloadUrl = null;
+
+    protected ?string $quarter = null;
+
+    protected ?string $year = null;
+
+    public function __construct(string $filePath, ?string $filename = null, ?string $downloadUrl = null)
     {
         $this->filePath = $filePath;
+        $this->filename = $filename;
+        $this->downloadUrl = $downloadUrl;
     }
 
-    public static function run(string $filePath): array
+    public static function run(string $filePath, ?string $filename = null, ?string $downloadUrl = null): array
     {
-        $importer = new self($filePath);
+        $importer = new self($filePath, $filename, $downloadUrl);
 
         return $importer->execute();
     }
@@ -55,11 +68,18 @@ class ImportPsgcData
         }
 
         $this->parseSheet($sheet);
+        $this->extractVersionInfo();
+        $this->createPsgcVersion();
         $this->establishRelationships();
         $this->saveData();
+        $this->updatePsgcVersionCounts();
+        $this->markVersionAsCurrent();
 
         return [
             'success' => true,
+            'psgc_version_id' => $this->psgcVersion->id,
+            'quarter' => $this->quarter,
+            'year' => $this->year,
             'regions' => $this->regionsCount,
             'provinces' => $this->provincesCount,
             'cities_municipalities' => $this->citiesMunicipalitiesCount,
@@ -184,11 +204,11 @@ class ImportPsgcData
         foreach ($this->barangays as $code => &$barangay) {
             $regionPrefix = substr($code, 0, 2); // First 2 digits = region
             $provincePrefix = substr($code, 0, 6); // First 6 digits = province
-            $cityPrefix = substr($code, 0, 6); // First 6 digits = city
+            $cityPrefix = substr($code, 0, 8); // First 8 digits = city/municipality
 
             $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
             $provinceCode = $provincePrefix . '0000'; // Match 10-digit province code
-            $cityCode = $cityPrefix . '0000'; // Match 10-digit city code
+            $cityCode = $cityPrefix . '00'; // Match 10-digit city/municipality code
 
             if (isset($this->regions[$regionCode])) {
                 $barangay['region_id'] = $this->regions[$regionCode]['id'] ?? null;
@@ -219,12 +239,14 @@ class ImportPsgcData
     protected function saveRegions(): void
     {
         foreach ($this->regions as $code => &$region) {
+            $region['psgc_version_id'] = $this->psgcVersion->id;
             $created = Region::updateOrCreate(
-                ['code' => $code],
+                ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 [
                     'name' => $region['name'],
                     'correspondence_code' => $region['correspondence_code'],
                     'geographic_level' => $region['geographic_level'],
+                    'psgc_version_id' => $this->psgcVersion->id,
                 ]
             );
 
@@ -239,13 +261,15 @@ class ImportPsgcData
     protected function saveProvinces(): void
     {
         foreach ($this->provinces as $code => &$province) {
+            $province['psgc_version_id'] = $this->psgcVersion->id;
             $created = Province::updateOrCreate(
-                ['code' => $code],
+                ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 [
                     'name' => $province['name'],
                     'correspondence_code' => $province['correspondence_code'],
                     'geographic_level' => $province['geographic_level'],
                     'region_id' => $province['region_id'] ?? null,
+                    'psgc_version_id' => $this->psgcVersion->id,
                 ]
             );
 
@@ -260,6 +284,7 @@ class ImportPsgcData
     protected function saveCitiesMunicipalities(): void
     {
         foreach ($this->citiesMunicipalities as $code => &$cityMunicipality) {
+            $cityMunicipality['psgc_version_id'] = $this->psgcVersion->id;
             $data = [
                 'name' => $cityMunicipality['name'],
                 'correspondence_code' => $cityMunicipality['correspondence_code'],
@@ -267,10 +292,11 @@ class ImportPsgcData
                 'region_id' => $cityMunicipality['region_id'] ?? null,
                 'province_id' => $cityMunicipality['province_id'] ?? null,
                 'is_capital' => false, // PSGC doesn't indicate capitals in data structure
+                'psgc_version_id' => $this->psgcVersion->id,
             ];
 
             $created = CityMunicipality::updateOrCreate(
-                ['code' => $code],
+                ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 $data
             );
 
@@ -285,13 +311,13 @@ class ImportPsgcData
     protected function saveBarangays(): void
     {
         foreach ($this->barangays as $code => $barangay) {
-            $existing = Barangay::where('code', $code)->first();
-
+            $barangay['psgc_version_id'] = $this->psgcVersion->id;
             $data = [
                 'code' => $code,
                 'name' => $barangay['name'],
                 'correspondence_code' => $barangay['correspondence_code'],
                 'geographic_level' => $barangay['geographic_level'],
+                'psgc_version_id' => $this->psgcVersion->id,
             ];
 
             if (isset($barangay['region_id'])) {
@@ -306,18 +332,69 @@ class ImportPsgcData
                 $data['city_municipality_id'] = $barangay['city_municipality_id'];
             }
 
-            if ($existing) {
-                $existing->update($data);
-            } else {
-                $created = Barangay::updateOrCreate(
-                    ['code' => $code],
-                    $data
-                );
+            $created = Barangay::updateOrCreate(
+                ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
+                $data
+            );
 
-                if ($created->wasRecentlyCreated) {
-                    $this->barangaysCount++;
-                }
+            if ($created->wasRecentlyCreated) {
+                $this->barangaysCount++;
             }
         }
+    }
+
+    /**
+     * Extract version information from filename.
+     */
+    protected function extractVersionInfo(): void
+    {
+        if ($this->filename === null) {
+            return;
+        }
+
+        $pattern = config('psgc.filename_pattern');
+
+        if (preg_match($pattern, basename($this->filename), $matches)) {
+            $this->quarter = $matches[1];
+            $this->year = $matches[2];
+        }
+    }
+
+    /**
+     * Create new PsgcVersion record.
+     */
+    protected function createPsgcVersion(): void
+    {
+        $this->psgcVersion = new PsgcVersion([
+            'quarter' => $this->quarter ?? null,
+            'year' => $this->year ?? null,
+            'publication_date' => now(),
+            'download_url' => $this->downloadUrl,
+            'filename' => $this->filename,
+            'is_current' => false,
+        ]);
+
+        $this->psgcVersion->save();
+    }
+
+    /**
+     * Update PsgcVersion with record counts.
+     */
+    protected function updatePsgcVersionCounts(): void
+    {
+        $this->psgcVersion->update([
+            'regions_count' => $this->regionsCount,
+            'provinces_count' => $this->provincesCount,
+            'cities_municipalities_count' => $this->citiesMunicipalitiesCount,
+            'barangays_count' => $this->barangaysCount,
+        ]);
+    }
+
+    /**
+     * Mark this version as current.
+     */
+    protected function markVersionAsCurrent(): void
+    {
+        $this->psgcVersion->setCurrent();
     }
 }

@@ -18,6 +18,7 @@ class CityMunicipality extends Model
         'correspondence_code',
         'geographic_level',
         'is_capital',
+        'psgc_version_id',
     ];
 
     public function region(): BelongsTo
@@ -33,5 +34,26 @@ class CityMunicipality extends Model
     public function barangays(): HasMany
     {
         return $this->hasMany(Barangay::class);
+    }
+
+    public function psgcVersion(): BelongsTo
+    {
+        return $this->belongsTo(PsgcVersion::class);
+    }
+
+    /**
+     * Scope to get records from current PSGC version.
+     */
+    public function scopeCurrent($query)
+    {
+        return $query->where('psgc_version_id', PsgcVersion::getCurrentVersion()?->id);
+    }
+
+    /**
+     * Scope to get records from specific PSGC version.
+     */
+    public function scopeVersion($query, int $versionId)
+    {
+        return $query->where('psgc_version_id', $versionId);
     }
 }

@@ -55,22 +55,22 @@ class SyncPsgcJob implements ShouldQueue
         try {
             Log::info('Starting PSGC sync job', ['path' => $this->path, 'force' => $this->force]);
 
-            $filePath = $this->downloadPhase();
+            $downloadResult = $this->downloadPhase();
 
-            if ($filePath === null) {
+            if ($downloadResult === null) {
                 $this->fail(new \Exception('Download phase failed'));
                 return;
             }
 
-            $validationResult = $this->validationPhase($filePath);
+            $validationResult = $this->validationPhase($downloadResult['path']);
 
             if (! $validationResult['success']) {
                 $this->fail(new \Exception('Validation failed'));
                 return;
             }
 
-            DB::transaction(function () use ($filePath) {
-                $importResult = $this->importPhase($filePath);
+            DB::transaction(function () use ($downloadResult) {
+                $importResult = $this->importPhase($downloadResult);
 
                 if (! $importResult['success']) {
                     throw new \Exception('Import failed: ' . ($importResult['message'] ?? 'Unknown error'));
@@ -85,7 +85,7 @@ class SyncPsgcJob implements ShouldQueue
         }
     }
 
-    protected function downloadPhase(): ?string
+    protected function downloadPhase(): ?array
     {
         if ($this->path !== null) {
             if (! file_exists($this->path)) {
@@ -94,7 +94,11 @@ class SyncPsgcJob implements ShouldQueue
                 return null;
             }
 
-            return realpath($this->path);
+            return [
+                'path' => realpath($this->path),
+                'filename' => basename($this->path),
+                'download_url' => null,
+            ];
         }
 
         $crawler = new CrawlPsgcWebsite;
@@ -113,7 +117,13 @@ class SyncPsgcJob implements ShouldQueue
             return null;
         }
 
-        return $filePath;
+        $filename = basename(parse_url($downloadUrl, PHP_URL_PATH));
+
+        return [
+            'path' => $filePath,
+            'filename' => $filename,
+            'download_url' => $downloadUrl,
+        ];
     }
 
     protected function validationPhase(string $filePath): array
@@ -137,9 +147,13 @@ class SyncPsgcJob implements ShouldQueue
         return ['success' => true];
     }
 
-    protected function importPhase(string $filePath): array
+    protected function importPhase(array $downloadResult): array
     {
-        $importer = new ImportPsgcData($filePath);
+        $importer = new ImportPsgcData(
+            $downloadResult['path'],
+            $downloadResult['filename'],
+            $downloadResult['download_url']
+        );
         $result = $importer->execute();
 
         if (! $result['success']) {
