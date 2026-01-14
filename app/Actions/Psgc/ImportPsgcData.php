@@ -7,6 +7,7 @@ use App\Models\CityMunicipality;
 use App\Models\Province;
 use App\Models\Region;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 
 class ImportPsgcData
@@ -149,33 +150,56 @@ class ImportPsgcData
 
     protected function establishRelationships(): void
     {
+        // Establish province -> region relationships using PSGC code prefix
         foreach ($this->provinces as $code => &$province) {
-            $correspondenceCode = $province['correspondence_code'];
+            $regionPrefix = substr($code, 0, 2); // First 2 digits = region
+            $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
 
-            if (isset($this->regions[$correspondenceCode])) {
-                $province['region_id'] = $this->regions[$correspondenceCode]['id'] ?? null;
+            if (isset($this->regions[$regionCode])) {
+                $province['region_id'] = $this->regions[$regionCode]['id'] ?? null;
             }
         }
 
+        // Establish city -> region and city -> province relationships
         foreach ($this->citiesMunicipalities as $code => &$cityMunicipality) {
-            $correspondenceCode = $cityMunicipality['correspondence_code'];
+            $regionPrefix = substr($code, 0, 2); // First 2 digits = region
+            $provincePrefix = substr($code, 0, 6); // First 6 digits = province
 
-            if (isset($this->regions[$correspondenceCode])) {
-                $cityMunicipality['region_id'] = $this->regions[$correspondenceCode]['id'] ?? null;
-            } elseif (isset($this->provinces[$correspondenceCode])) {
-                $cityMunicipality['province_id'] = $this->provinces[$correspondenceCode]['id'] ?? null;
+            $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
+            $provinceCode = $provincePrefix . '0000'; // Match 10-digit province code
+
+            if (isset($this->regions[$regionCode])) {
+                $cityMunicipality['region_id'] = $this->regions[$regionCode]['id'] ?? null;
+            }
+
+            if (isset($this->provinces[$provinceCode])) {
+                $cityMunicipality['province_id'] = $this->provinces[$provinceCode]['id'] ?? null;
             }
         }
+    }
 
+    protected function establishBarangayRelationships(): void
+    {
+        // Establish barangay relationships (only run after cities are saved so they have IDs)
         foreach ($this->barangays as $code => &$barangay) {
-            $correspondenceCode = $barangay['correspondence_code'];
+            $regionPrefix = substr($code, 0, 2); // First 2 digits = region
+            $provincePrefix = substr($code, 0, 6); // First 6 digits = province
+            $cityPrefix = substr($code, 0, 6); // First 6 digits = city
 
-            if (isset($this->regions[$correspondenceCode])) {
-                $barangay['region_id'] = $this->regions[$correspondenceCode]['id'] ?? null;
-            } elseif (isset($this->provinces[$correspondenceCode])) {
-                $barangay['province_id'] = $this->provinces[$correspondenceCode]['id'] ?? null;
-            } elseif (isset($this->citiesMunicipalities[$correspondenceCode])) {
-                $barangay['city_municipality_id'] = $this->citiesMunicipalities[$correspondenceCode]['id'] ?? null;
+            $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
+            $provinceCode = $provincePrefix . '0000'; // Match 10-digit province code
+            $cityCode = $cityPrefix . '0000'; // Match 10-digit city code
+
+            if (isset($this->regions[$regionCode])) {
+                $barangay['region_id'] = $this->regions[$regionCode]['id'] ?? null;
+            }
+
+            if (isset($this->provinces[$provinceCode])) {
+                $barangay['province_id'] = $this->provinces[$provinceCode]['id'] ?? null;
+            }
+
+            if (isset($this->citiesMunicipalities[$cityCode])) {
+                $barangay['city_municipality_id'] = $this->citiesMunicipalities[$cityCode]['id'] ?? null;
             }
         }
     }
@@ -187,6 +211,7 @@ class ImportPsgcData
             $this->establishRelationships();
             $this->saveProvinces();
             $this->saveCitiesMunicipalities();
+            $this->establishBarangayRelationships();
             $this->saveBarangays();
         });
     }
@@ -241,6 +266,7 @@ class ImportPsgcData
                 'geographic_level' => $cityMunicipality['geographic_level'],
                 'region_id' => $cityMunicipality['region_id'] ?? null,
                 'province_id' => $cityMunicipality['province_id'] ?? null,
+                'is_capital' => false, // PSGC doesn't indicate capitals in data structure
             ];
 
             $created = CityMunicipality::updateOrCreate(

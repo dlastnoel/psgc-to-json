@@ -6,6 +6,7 @@ use App\Actions\Psgc\CrawlPsgcWebsite;
 use App\Actions\Psgc\DownloadPsgc;
 use App\Actions\Psgc\ImportPsgcData;
 use App\Actions\Psgc\ValidatePsgcExcel;
+use App\Jobs\SyncPsgcJob;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
 
@@ -18,7 +19,8 @@ class SyncCommand extends Command
      */
     protected $signature = 'psgc:sync
                             {--path= : Path to local PSGC Excel file}
-                            {--force : Skip validation and force import}';
+                            {--force : Skip validation and force import}
+                            {--queue : Run as background queue job (recommended for large files)}';
 
     /**
      * The console command description.
@@ -33,6 +35,44 @@ class SyncCommand extends Command
      * Execute the console command.
      */
     public function handle(): int
+    {
+        if ($this->option('queue')) {
+            return $this->handleQueued();
+        }
+
+        return $this->handleSynchronous();
+    }
+
+    /**
+     * Handle as queued job (recommended for large files).
+     */
+    protected function handleQueued(): int
+    {
+        $this->info('Dispatching PSGC sync to queue...');
+
+        SyncPsgcJob::dispatch(
+            $this->option('path') ?: null,
+            $this->option('force')
+        );
+
+        $this->newLine();
+        $this->success('Job dispatched successfully!');
+        $this->newLine();
+        $this->line('To monitor the job:');
+        $this->line('  php artisan queue:work');
+        $this->newLine();
+        $this->line('To check job status:');
+        $this->line('  php artisan queue:failed');
+        $this->newLine();
+        $this->warn('Note: Check storage/logs/laravel.log for detailed progress');
+
+        return 0;
+    }
+
+    /**
+     * Handle synchronously (default).
+     */
+    protected function handleSynchronous(): int
     {
         return DB::transaction(function () {
             try {

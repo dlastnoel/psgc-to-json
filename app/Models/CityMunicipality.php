@@ -17,6 +17,7 @@ class CityMunicipality extends Model
         'name',
         'correspondence_code',
         'geographic_level',
+        'is_capital',
     ];
 
     public function region(): BelongsTo

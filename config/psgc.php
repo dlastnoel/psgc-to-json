@@ -29,6 +29,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Memory Limit (MB)
+    |--------------------------------------------------------------------------
+    |
+    | Memory limit in MB for processing PSGC Excel files via queue.
+    | Large PSGC files (43k+ rows) require significant memory.
+    | Default: 512MB
+    |
+    */
+
+    'memory_limit' => env('PSGC_MEMORY_LIMIT', 1024), // MB - 1GB default for large PSGC files
+
+    /*
+    |--------------------------------------------------------------------------
     | Filename Pattern
     |--------------------------------------------------------------------------
     |

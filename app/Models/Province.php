@@ -30,4 +30,9 @@ class Province extends Model
     {
         return $this->hasMany(Barangay::class);
     }
+
+    public function capitalCity(): HasMany
+    {
+        return $this->hasMany(CityMunicipality::class)->where('is_capital', true);
+    }
 }

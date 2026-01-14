@@ -2,7 +2,9 @@
 
 namespace App\Actions\Psgc;
 
+use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReader;
 
 class ValidatePsgcExcel
 {
@@ -22,7 +24,17 @@ class ValidatePsgcExcel
     public function validate(string $filePath): void
     {
         try {
-            $spreadsheet = IOFactory::load($filePath);
+            // Read only first 100 rows for validation
+            $reader = IOFactory::createReaderForFile($filePath);
+
+            // Load only first sheet
+            $reader->setLoadSheetsOnly([config('psgc.validation.required_sheet')]);
+
+            // Set read filter to limit rows
+            $filter = new RowLimitFilter(100);
+            $reader->setReadFilter($filter);
+
+            $spreadsheet = $reader->load($filePath);
 
             $this->validateSheetExists($spreadsheet);
 
@@ -31,6 +43,10 @@ class ValidatePsgcExcel
             }
 
             $this->validateColumns($spreadsheet);
+
+            // Clear spreadsheet to free memory
+            $spreadsheet->disconnectWorksheets();
+            unset($spreadsheet);
         } catch (\Exception $e) {
             $this->errors[] = 'File is corrupted or invalid Excel format: '.$e->getMessage();
         }
@@ -142,5 +158,20 @@ class ValidatePsgcExcel
     public function getErrors(): array
     {
         return $this->errors;
+    }
+}
+
+class RowLimitFilter implements \PhpOffice\PhpSpreadsheet\Reader\IReadFilter
+{
+    protected int $maxRows;
+
+    public function __construct(int $maxRows)
+    {
+        $this->maxRows = $maxRows;
+    }
+
+    public function readCell(string $columnAddress, int $row, string $worksheetName = ''): bool
+    {
+        return $row <= $this->maxRows;
     }
 }

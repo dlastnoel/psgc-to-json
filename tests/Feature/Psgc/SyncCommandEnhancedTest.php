@@ -92,5 +92,5 @@ it('displays import summary', function () {
     $this->artisan('psgc:sync', ['--path' => $testFile])
         ->expectsOutput('Import Summary:')
         ->expectsOutputToContain('Regions:')
-        ->expectsOutputToContain('Provinces:')
+        ->expectsOutputToContain('Provinces:');
 });
