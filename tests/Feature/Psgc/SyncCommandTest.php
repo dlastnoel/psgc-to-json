@@ -157,55 +157,66 @@ it('fails without --path when crawling is not available', function () {
 
 // Helper functions
 
-function createMockExcelFile(array $rows): string
-{
-    $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
-    $worksheet = $spreadsheet->getActiveSheet();
+if (!function_exists('createMockExcelFile')) {
+    function createMockExcelFile(array $rows): string
+    {
+        $spreadsheet = new \PhpOffice\PhpSpreadsheet\Spreadsheet;
+        $worksheet = $spreadsheet->getActiveSheet();
+        $worksheet->setTitle('PSGC');
 
-    // Header row
-    $worksheet->setCellValue('A1', '10-digit PSGC');
-    $worksheet->setCellValue('B1', 'Name');
-    $worksheet->setCellValue('C1', 'Correspondence Code');
-    $worksheet->setCellValue('D1', 'Geographic Level');
+        // Header row
+        $worksheet->setCellValue('A1', '10-digit PSGC');
+        $worksheet->setCellValue('B1', 'Name');
+        $worksheet->setCellValue('C1', 'Old Name');
+        $worksheet->setCellValue('D1', 'Correspondence Code');
+        $worksheet->setCellValue('E1', 'Geographic Level');
+        $worksheet->setCellValue('F1', 'Status');
 
-    $row = 2;
-    foreach ($rows as $rowData) {
-        $worksheet->setCellValue('A'.$row, $rowData['code']);
-        $worksheet->setCellValue('B'.$row, $rowData['name']);
-        $worksheet->setCellValue('C'.$row, $rowData['correspondence_code']);
-        $worksheet->setCellValue('D'.$row, $rowData['geographic_level']);
+        $row = 2;
+        foreach ($rows as $rowData) {
+            $worksheet->setCellValue('A'.$row, $rowData['code']);
+            $worksheet->setCellValue('B'.$row, $rowData['name']);
+            $worksheet->setCellValue('C'.$row, $rowData['old_name'] ?? '');
+            $worksheet->setCellValue('D'.$row, $rowData['correspondence_code']);
+            $worksheet->setCellValue('E'.$row, $rowData['geographic_level']);
+            $worksheet->setCellValue('F'.$row, $rowData['status'] ?? '');
 
-        if (isset($rowData['region_code'])) {
-            $worksheet->setCellValue('E'.$row, $rowData['region_code']);
+            if (isset($rowData['region_code'])) {
+                $worksheet->setCellValue('G'.$row, $rowData['region_code']);
+            }
+
+            if (isset($rowData['province_code'])) {
+                $worksheet->setCellValue('H'.$row, $rowData['province_code']);
+            }
+
+            if (isset($rowData['city_code'])) {
+                $worksheet->setCellValue('I'.$row, $rowData['city_code']);
+            }
+
+            $row++;
         }
 
-        if (isset($rowData['province_code'])) {
-            $worksheet->setCellValue('F'.$row, $rowData['province_code']);
-        }
+        $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $tempPath = storage_path('app/test_sync_'.time().'.xlsx');
+        $writer->save($tempPath);
 
-        if (isset($rowData['city_code'])) {
-            $worksheet->setCellValue('G'.$row, $rowData['city_code']);
-        }
-
-        $row++;
+        return $tempPath;
     }
-
-    $writer = \PhpOffice\PhpSpreadsheet\IOFactory::createWriter($spreadsheet, 'Xlsx');
-    $tempPath = storage_path('app/test_sync_'.time().'.xlsx');
-    $writer->save($tempPath);
-
-    return $tempPath;
 }
 
-function createRow(string $code, string $name, string $correspondenceCode, string $geoLevel, ?string $regionCode = null, ?string $provinceCode = null, ?string $cityCode = null): array
-{
-    return [
-        'code' => $code,
-        'name' => $name,
-        'correspondence_code' => $correspondenceCode,
-        'geographic_level' => $geoLevel,
-        'region_code' => $regionCode,
-        'province_code' => $provinceCode,
-        'city_code' => $cityCode,
-    ];
+if (!function_exists('createRow')) {
+    function createRow(string $code, string $name, string $correspondenceCode, string $geoLevel, ?string $regionCode = null, ?string $provinceCode = null, ?string $cityCode = null, ?string $oldName = null, ?string $status = null): array
+    {
+        return [
+            'code' => $code,
+            'name' => $name,
+            'old_name' => $oldName,
+            'correspondence_code' => $correspondenceCode,
+            'geographic_level' => $geoLevel,
+            'status' => $status,
+            'region_code' => $regionCode,
+            'province_code' => $provinceCode,
+            'city_code' => $cityCode,
+        ];
+    }
 }

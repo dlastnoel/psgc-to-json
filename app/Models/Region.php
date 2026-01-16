@@ -11,6 +11,7 @@ class Region extends Model
     protected $fillable = [
         'code',
         'name',
+        'old_name',
         'correspondence_code',
         'geographic_level',
         'psgc_version_id',

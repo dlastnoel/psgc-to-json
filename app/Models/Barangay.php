@@ -9,10 +9,14 @@ class Barangay extends Model
 {
     protected $fillable = [
         'region_id',
+        'region_code',
         'province_id',
+        'province_code',
         'city_municipality_id',
+        'city_municipality_code',
         'code',
         'name',
+        'old_name',
         'correspondence_code',
         'geographic_level',
         'psgc_version_id',

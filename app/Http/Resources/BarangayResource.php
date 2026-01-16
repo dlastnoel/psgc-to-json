@@ -19,8 +19,11 @@ class BarangayResource extends JsonResource
             'correspondence_code' => $this->correspondence_code,
             'geographic_level' => $this->geographic_level,
             'region_id' => $this->region_id,
+            'region_code' => $this->region_code,
             'province_id' => $this->province_id,
+            'province_code' => $this->province_code,
             'city_municipality_id' => $this->city_municipality_id,
+            'city_municipality_code' => $this->city_municipality_code,
             'psgc_version_id' => $this->psgc_version_id,
         ];
     }

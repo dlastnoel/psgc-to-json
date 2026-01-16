@@ -76,9 +76,11 @@ it('imports provinces correctly', function () {
     expect(Province::count())->toBe(2);
 
     $province1 = Province::where('code', '0110000000')->first();
+    expect($province1)->not->toBeNull();
     expect($province1->name)->toBe('Province 1');
 
     $province2 = Province::where('code', '0120000000')->first();
+    expect($province2)->not->toBeNull();
     expect($province2->name)->toBe('Province 2');
 });
 
@@ -211,57 +213,133 @@ it('returns import summary with correct structure', function () {
     expect($result['regions'])->toBe(1);
 });
 
+it('elevates NCR cities to provinces table', function () {
+    $filePath = createMockExcelFile([
+        createRow('1300000000', 'National Capital Region (NCR)', '1300000000', 'Region'),
+        createRow('1375040000', 'City of Manila', '1375040000', 'City', '1300000000'),
+    ]);
+
+    ImportPsgcData::run($filePath);
+
+    $manila = Province::where('code', '1375040000')->first();
+    expect($manila)->not->toBeNull();
+    expect($manila->is_elevated_city)->toBeTrue();
+    expect($manila->geographic_level)->toBe('City');
+    expect($manila->name)->toBe('City of Manila');
+});
+
+it('stores non-NCR provinces correctly', function () {
+    $filePath = createMockExcelFile([
+        createRow('0100000000', 'Region I', '0100000000', 'Region'),
+        createRow('0128000000', 'Ilocos Norte', '0128000000', 'Province', '0100000000'),
+    ]);
+
+    ImportPsgcData::run($filePath);
+
+    $ilocosNorte = Province::where('code', '0128000000')->first();
+    expect($ilocosNorte)->not->toBeNull();
+    expect($ilocosNorte->is_elevated_city)->toBeFalse();
+    expect($ilocosNorte->geographic_level)->toBe('Province');
+    expect($ilocosNorte->name)->toBe('Ilocos Norte');
+});
+
+it('stores non-NCR cities in cities_municipalities table', function () {
+    $filePath = createMockExcelFile([
+        createRow('0100000000', 'Region I', '0100000000', 'Region'),
+        createRow('0128000000', 'Ilocos Norte', '0128000000', 'Province', '0100000000'),
+        createRow('0128010000', 'Laoag City', '0128010000', 'City', '0100000000', '0128000000'),
+    ]);
+
+    ImportPsgcData::run($filePath);
+
+    $laoag = CityMunicipality::where('code', '0128010000')->first();
+    expect($laoag)->not->toBeNull();
+    expect($laoag->geographic_level)->toBe('City');
+    expect($laoag->name)->toBe('Laoag City');
+    expect($laoag->province_id)->not->toBeNull();
+});
+
+it('links barangays to elevated NCR cities', function () {
+    $filePath = createMockExcelFile([
+        createRow('1300000000', 'National Capital Region (NCR)', '1300000000', 'Region'),
+        createRow('1375040000', 'City of Manila', '1375040000', 'City', '1300000000'),
+        createRow('1375040001', 'Barangay 1, Zone 1, Manila', '1375040001', 'Barangay', '1300000000', '1375040000'),
+    ]);
+
+    ImportPsgcData::run($filePath);
+
+    $barangay = Barangay::where('code', '1375040001')->first();
+    expect($barangay)->not->toBeNull();
+    expect($barangay->province_id)->not->toBeNull();
+    expect($barangay->city_municipality_id)->toBeNull();
+
+    $manila = Province::where('code', '1375040000')->first();
+    expect($barangay->province_id)->toBe($manila->id);
+    expect($manila->is_elevated_city)->toBeTrue();
+});
+
 // Helper functions
 
-function createMockExcelFile(array $rows): string
-{
-    $spreadsheet = new Spreadsheet;
-    $worksheet = $spreadsheet->getActiveSheet();
+if (!function_exists('createMockExcelFile')) {
+    function createMockExcelFile(array $rows): string
+    {
+        $spreadsheet = new Spreadsheet;
+        $worksheet = $spreadsheet->getActiveSheet();
+        $worksheet->setTitle('PSGC');
 
-    // Header row
-    $worksheet->setCellValue('A1', '10-digit PSGC');
-    $worksheet->setCellValue('B1', 'Name');
-    $worksheet->setCellValue('C1', 'Correspondence Code');
-    $worksheet->setCellValue('D1', 'Geographic Level');
+        // Header row
+        $worksheet->setCellValue('A1', '10-digit PSGC');
+        $worksheet->setCellValue('B1', 'Name');
+        $worksheet->setCellValue('C1', 'Old Name');
+        $worksheet->setCellValue('D1', 'Correspondence Code');
+        $worksheet->setCellValue('E1', 'Geographic Level');
+        $worksheet->setCellValue('F1', 'Status');
 
-    $row = 2;
-    foreach ($rows as $rowData) {
-        $worksheet->setCellValue('A'.$row, $rowData['code']);
-        $worksheet->setCellValue('B'.$row, $rowData['name']);
-        $worksheet->setCellValue('C'.$row, $rowData['correspondence_code']);
-        $worksheet->setCellValue('D'.$row, $rowData['geographic_level']);
+        $row = 2;
+        foreach ($rows as $rowData) {
+            $worksheet->setCellValue('A'.$row, $rowData['code']);
+            $worksheet->setCellValue('B'.$row, $rowData['name']);
+            $worksheet->setCellValue('C'.$row, $rowData['old_name'] ?? '');
+            $worksheet->setCellValue('D'.$row, $rowData['correspondence_code']);
+            $worksheet->setCellValue('E'.$row, $rowData['geographic_level']);
+            $worksheet->setCellValue('F'.$row, $rowData['status'] ?? '');
 
-        if (isset($rowData['region_code'])) {
-            $worksheet->setCellValue('E'.$row, $rowData['region_code']);
+            if (isset($rowData['region_code'])) {
+                $worksheet->setCellValue('G'.$row, $rowData['region_code']);
+            }
+
+            if (isset($rowData['province_code'])) {
+                $worksheet->setCellValue('H'.$row, $rowData['province_code']);
+            }
+
+            if (isset($rowData['city_code'])) {
+                $worksheet->setCellValue('I'.$row, $rowData['city_code']);
+            }
+
+            $row++;
         }
 
-        if (isset($rowData['province_code'])) {
-            $worksheet->setCellValue('F'.$row, $rowData['province_code']);
-        }
+        $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
+        $tempPath = storage_path('app/test_import_'.time().'.xlsx');
+        $writer->save($tempPath);
 
-        if (isset($rowData['city_code'])) {
-            $worksheet->setCellValue('G'.$row, $rowData['city_code']);
-        }
-
-        $row++;
+        return $tempPath;
     }
-
-    $writer = IOFactory::createWriter($spreadsheet, 'Xlsx');
-    $tempPath = storage_path('app/test_import_'.time().'.xlsx');
-    $writer->save($tempPath);
-
-    return $tempPath;
 }
 
-function createRow(string $code, string $name, string $correspondenceCode, string $geoLevel, ?string $regionCode = null, ?string $provinceCode = null, ?string $cityCode = null): array
-{
-    return [
-        'code' => $code,
-        'name' => $name,
-        'correspondence_code' => $correspondenceCode,
-        'geographic_level' => $geoLevel,
-        'region_code' => $regionCode,
-        'province_code' => $provinceCode,
-        'city_code' => $cityCode,
-    ];
+if (!function_exists('createRow')) {
+    function createRow(string $code, string $name, string $correspondenceCode, string $geoLevel, ?string $regionCode = null, ?string $provinceCode = null, ?string $cityCode = null, ?string $oldName = null, ?string $status = null): array
+    {
+        return [
+            'code' => $code,
+            'name' => $name,
+            'old_name' => $oldName,
+            'correspondence_code' => $correspondenceCode,
+            'geographic_level' => $geoLevel,
+            'status' => $status,
+            'region_code' => $regionCode,
+            'province_code' => $provinceCode,
+            'city_code' => $cityCode,
+        ];
+    }
 }

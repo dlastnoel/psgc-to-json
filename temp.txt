@@ -116,9 +116,10 @@ class ImportPsgcData
 
         $code = $data['10-digit PSGC'] ?? '';
         $name = $data['Name'] ?? '';
+        $oldName = $data['Old Name'] ?? '';
         $correspondenceCode = $data['Correspondence Code'] ?? '';
         $geographicLevel = trim($data['Geographic Level'] ?? '');
-        $cityClass = $data['City Class'] ?? '';
+        $status = $data['Status'] ?? '';
 
         if (empty($code) || empty($name) || empty($geographicLevel)) {
             return;
@@ -138,13 +139,20 @@ class ImportPsgcData
 
         $mappedLevel = $levelMap[$normalizedLevel] ?? $geographicLevel;
 
-        // Check if this is an elevated city (HUC or ICC)
-        $isElevatedCity = ($cityClass === 'HUC' || $cityClass === 'ICC');
+        // Extract region prefix (first 2 digits)
+        $regionPrefix = substr($code, 0, 2);
+
+        // Check if this is NCR (Region 13)
+        $isNCR = $regionPrefix === '13';
+
+        // Detect capital status from 'Status' column
+        $isCapital = stripos(trim($status), 'Capital') !== false;
 
         if ($normalizedLevel === 'reg' || $normalizedLevel === 'region') {
             $this->regions[$code] = [
                 'code' => $code,
                 'name' => $name,
+                'old_name' => $oldName,
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
             ];
@@ -152,32 +160,50 @@ class ImportPsgcData
             $this->provinces[$code] = [
                 'code' => $code,
                 'name' => $name,
+                'old_name' => $oldName,
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
+                'is_capital' => $isCapital,
                 'is_elevated_city' => false,
             ];
-        } elseif (in_array($normalizedLevel, ['city', 'mun', 'municipality', 'submun'], true)) {
-            $this->citiesMunicipalities[$code] = [
-                'code' => $code,
-                'name' => $name,
-                'correspondence_code' => $correspondenceCode,
-                'geographic_level' => $mappedLevel,
-            ];
-
-            // If this is an elevated city, also add it to provinces
-            if ($isElevatedCity) {
+        } elseif ($normalizedLevel === 'city') {
+            // ELEVATE NCR cities to provinces table
+            if ($isNCR) {
                 $this->provinces[$code] = [
                     'code' => $code,
                     'name' => $name,
+                    'old_name' => $oldName,
                     'correspondence_code' => $correspondenceCode,
-                    'geographic_level' => 'Province',
-                    'is_elevated_city' => true,
+                    'geographic_level' => $mappedLevel,
+                    'is_capital' => $isCapital,
+                    'is_elevated_city' => true, // Flag this as elevated
+                ];
+            } else {
+                // Non-NCR cities go to cities_municipalities table
+                $this->citiesMunicipalities[$code] = [
+                    'code' => $code,
+                    'name' => $name,
+                    'old_name' => $oldName,
+                    'correspondence_code' => $correspondenceCode,
+                    'geographic_level' => $mappedLevel,
+                    'is_capital' => $isCapital,
                 ];
             }
+        } elseif (in_array($normalizedLevel, ['mun', 'municipality', 'submun'], true)) {
+            // All municipalities and SubMun go to cities_municipalities table (not elevated to provinces)
+            $this->citiesMunicipalities[$code] = [
+                'code' => $code,
+                'name' => $name,
+                'old_name' => $oldName,
+                'correspondence_code' => $correspondenceCode,
+                'geographic_level' => $mappedLevel,
+                'is_capital' => $isCapital,
+            ];
         } elseif ($normalizedLevel === 'bgy' || $normalizedLevel === 'barangay') {
             $this->barangays[$code] = [
                 'code' => $code,
                 'name' => $name,
+                'old_name' => $oldName,
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
             ];
@@ -186,30 +212,23 @@ class ImportPsgcData
 
     protected function establishRelationships(): void
     {
-        // Establish province -> region relationships using PSGC code prefix
+        // Establish province -> region relationships
         foreach ($this->provinces as $code => &$province) {
             $regionPrefix = substr($code, 0, 2); // First 2 digits = region
             $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
 
-            if (isset($this->regions[$regionCode])) {
-                $province['region_id'] = $this->regions[$regionCode]['id'] ?? null;
+            if (isset($this->regions[$regionCode]) && isset($this->regions[$regionCode]['id'])) {
+                $province['region_id'] = $this->regions[$regionCode]['id'];
             }
         }
 
-        // Establish city -> region and city -> province relationships
+        // Establish city -> region relationships
         foreach ($this->citiesMunicipalities as $code => &$cityMunicipality) {
             $regionPrefix = substr($code, 0, 2); // First 2 digits = region
-            $provincePrefix = substr($code, 0, 6); // First 6 digits = province
-
             $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
-            $provinceCode = $provincePrefix . '0000'; // Match 10-digit province code
 
-            if (isset($this->regions[$regionCode])) {
-                $cityMunicipality['region_id'] = $this->regions[$regionCode]['id'] ?? null;
-            }
-
-            if (isset($this->provinces[$provinceCode])) {
-                $cityMunicipality['province_id'] = $this->provinces[$provinceCode]['id'] ?? null;
+            if (isset($this->regions[$regionCode]) && isset($this->regions[$regionCode]['id'])) {
+                $cityMunicipality['region_id'] = $this->regions[$regionCode]['id'];
             }
         }
     }
@@ -234,8 +253,15 @@ class ImportPsgcData
                 $barangay['province_id'] = $this->provinces[$provinceCode]['id'] ?? null;
             }
 
+            // Set city_municipality_id based on parent type:
+            // 1. If parent is in cities_municipalities table (municipality, SubMun)
+            // 2. If parent is an elevated NCR city (in provinces table)
             if (isset($this->citiesMunicipalities[$cityCode])) {
+                // Parent is a regular municipality/SubMun
                 $barangay['city_municipality_id'] = $this->citiesMunicipalities[$cityCode]['id'] ?? null;
+            } elseif (isset($this->provinces[$cityCode])) {
+                // Parent is an elevated NCR city (in provinces table)
+                $barangay['city_municipality_id'] = $this->provinces[$cityCode]['id'] ?? null;
             }
         }
     }
@@ -260,6 +286,7 @@ class ImportPsgcData
                 ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 [
                     'name' => $region['name'],
+                    'old_name' => $region['old_name'] ?? null,
                     'correspondence_code' => $region['correspondence_code'],
                     'geographic_level' => $region['geographic_level'],
                     'psgc_version_id' => $this->psgcVersion->id,
@@ -278,19 +305,22 @@ class ImportPsgcData
     {
         foreach ($this->provinces as $code => &$province) {
             $province['psgc_version_id'] = $this->psgcVersion->id;
-            
+
+            // Get region code from province code (first 2 digits + '00000000')
             $regionCode = substr($code, 0, 2) . '00000000';
-            
+
             $created = Province::updateOrCreate(
                 ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 [
                     'name' => $province['name'],
+                    'old_name' => $province['old_name'] ?? null,
                     'correspondence_code' => $province['correspondence_code'],
                     'geographic_level' => $province['geographic_level'],
-                    'region_id' => $province['region_id'] ?? null,
-                    'region_code' => $regionCode,
-                    'province_code' => $code,
+                    'is_capital' => $province['is_capital'] ?? false,
                     'is_elevated_city' => $province['is_elevated_city'] ?? false,
+                    'region_id' => $province['region_id'] ?? null,
+                    'region_code' => $regionCode, // Add region code for reference
+                    'province_code' => $code, // Add province code for reference (same as code column)
                     'psgc_version_id' => $this->psgcVersion->id,
                 ]
             );
@@ -309,42 +339,26 @@ class ImportPsgcData
             $cityMunicipality['psgc_version_id'] = $this->psgcVersion->id;
 
             // Determine province_id based on location:
-            // 1. NCR cities/municipalities: Use elevated city's ID if matches
-            // 2. Non-NCR cities: Use traditional province code
+            // 1. Non-NCR cities: Use traditional province (first 4 digits + '000000')
+            // 2. NCR municipalities/SubMun: Use elevated city's ID if matches
             $isNCR = substr($code, 0, 2) === '13'; // NCR region code
             $provinceId = null;
-            $provinceCode = null;
 
             if ($isNCR) {
-                // For NCR, check if this city itself is an elevated city
-                // Elevated cities (HUC/ICC) are also listed as provinces, so they reference themselves
-                $found = false;
+                // For NCR, find matching elevated city and use its ID as province_id
+                $prefix = substr($code, 0, 4); // First 4 digits (city/municipality prefix)
+
+                // Try to find an elevated city with matching prefix
                 foreach ($this->provinces as $provCode => $province) {
-                    if ($provCode === $code && ($province['is_elevated_city'] ?? false)) {
+                    if (substr($provCode, 0, 4) === $prefix && ($province['is_elevated_city'] ?? false)) {
                         $provinceId = $province['id'];
-                        $provinceCode = $provCode;
-                        $found = true;
                         break;
-                    }
-                }
-                // If not an elevated city, check if it's a district under an elevated city
-                // Match based on first 4 digits (city prefix)
-                if (!$found) {
-                    $cityPrefix = substr($code, 0, 4); // First 4 digits (city prefix)
-                    foreach ($this->provinces as $provCode => $province) {
-                        if (substr($provCode, 0, 4) === $cityPrefix && ($province['is_elevated_city'] ?? false)) {
-                            $provinceId = $province['id'];
-                            $provinceCode = $provCode;
-                            $found = true;
-                            break;
-                        }
                     }
                 }
             } else {
                 // For Non-NCR, use traditional province
-                // Province code format: region (2 digits) + province (2 digits) + '000000'
-                // Example: City 0110100000 -> Province 0110000000 (Region 01, Province 01)
-                $provinceCode = substr($code, 0, 2) . substr($code, 2, 2) . '000000';
+                $provincePrefix = substr($code, 0, 4);
+                $provinceCode = $provincePrefix . '000000';
 
                 if (isset($this->provinces[$provinceCode])) {
                     $provinceId = $this->provinces[$provinceCode]['id'];
@@ -354,14 +368,27 @@ class ImportPsgcData
             // Get region code from city code (first 2 digits + '00000000')
             $regionCode = substr($code, 0, 2) . '00000000';
 
+            // Get province code for reference
+            $provinceCodeRef = null;
+            if ($provinceId) {
+                // Find the province code by its ID
+                foreach ($this->provinces as $provCode => $prov) {
+                    if ($prov['id'] === $provinceId) {
+                        $provinceCodeRef = $provCode;
+                        break;
+                    }
+                }
+            }
+
             $data = [
                 'name' => $cityMunicipality['name'],
+                'old_name' => $cityMunicipality['old_name'] ?? null,
                 'correspondence_code' => $cityMunicipality['correspondence_code'],
                 'geographic_level' => $cityMunicipality['geographic_level'],
                 'region_id' => $cityMunicipality['region_id'] ?? null,
-                'region_code' => $regionCode,
+                'region_code' => $regionCode, // Add region code for reference
                 'province_id' => $provinceId,
-                'province_code' => $provinceCode,
+                'province_code' => $provinceCodeRef, // Add province code for reference
                 'is_capital' => $cityMunicipality['is_capital'] ?? false,
                 'psgc_version_id' => $this->psgcVersion->id,
             ];
@@ -383,21 +410,13 @@ class ImportPsgcData
     {
         foreach ($this->barangays as $code => $barangay) {
             $barangay['psgc_version_id'] = $this->psgcVersion->id;
-            
-            // Derive codes from barangay code
-            $regionCode = substr($code, 0, 2) . '00000000';
-            $provinceCode = substr($code, 0, 6) . '0000';
-            $cityCode = substr($code, 0, 8) . '00';
-            
             $data = [
                 'code' => $code,
                 'name' => $barangay['name'],
+                'old_name' => $barangay['old_name'] ?? null,
                 'correspondence_code' => $barangay['correspondence_code'],
                 'geographic_level' => $barangay['geographic_level'],
                 'psgc_version_id' => $this->psgcVersion->id,
-                'region_code' => $regionCode,
-                'province_code' => $provinceCode,
-                'city_municipality_code' => $cityCode,
             ];
 
             if (isset($barangay['region_id'])) {

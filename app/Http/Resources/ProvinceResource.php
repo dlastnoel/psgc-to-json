@@ -20,6 +20,8 @@ class ProvinceResource extends JsonResource
             'correspondence_code' => $this->correspondence_code,
             'geographic_level' => $this->geographic_level,
             'region_id' => $this->region_id,
+            'region_code' => $this->region_code,
+            'province_code' => $this->province_code,
             'psgc_version_id' => $this->psgc_version_id,
             'cities_municipalities' => CityMunicipalityResource::collection($this->whenLoaded('citiesMunicipalities')),
         ];

@@ -12,13 +12,20 @@ class CityMunicipality extends Model
 
     protected $fillable = [
         'region_id',
+        'region_code',
         'province_id',
+        'province_code',
         'code',
         'name',
+        'old_name',
         'correspondence_code',
         'geographic_level',
         'is_capital',
         'psgc_version_id',
+    ];
+
+    protected $casts = [
+        'is_capital' => 'boolean',
     ];
 
     public function region(): BelongsTo

@@ -28,16 +28,27 @@ The Apollo agent contains:
 
 ### 1. Database Schema Changes
 
-#### Add New Columns to `provinces` Table
+#### Add New Columns to `regions`, `provinces`, `cities_municipalities`, and `barangays` Tables
 
 ```sql
+-- For regions table
+ALTER TABLE regions ADD COLUMN old_name VARCHAR(255) NULL;
+
+-- For provinces table
 ALTER TABLE provinces ADD COLUMN is_capital BOOLEAN DEFAULT FALSE;
 ALTER TABLE provinces ADD COLUMN is_elevated_city BOOLEAN DEFAULT FALSE;
+ALTER TABLE provinces ADD COLUMN old_name VARCHAR(255) NULL;
+
+-- For cities_municipalities table
+ALTER TABLE cities_municipalities ADD COLUMN old_name VARCHAR(255) NULL;
+
+-- For barangays table
+ALTER TABLE barangays ADD COLUMN old_name VARCHAR(255) NULL;
 ```
 
 **Migration File:**
 ```php
-// database/migrations/YYYY_MM_DD_HHMMSS_add_is_elevated_city_and_is_capital_to_provinces_table.php
+// database/migrations/YYYY_MM_DD_HHMMSS_add_columns_to_psgc_tables.php
 <?php
 
 use Illuminate\Database\Migrations\Migration;
@@ -48,20 +59,45 @@ return new class extends Migration
 {
     public function up(): void
     {
+        Schema::table('regions', function (Blueprint $table) {
+            $table->string('old_name')->nullable()->after('name');
+        });
+
         Schema::table('provinces', function (Blueprint $table) {
             $table->boolean('is_capital')->default(false)->after('geographic_level');
             $table->boolean('is_elevated_city')->default(false)->after('is_capital');
+            $table->string('old_name')->nullable()->after('name');
             $table->index('is_elevated_city');
             $table->index('is_capital');
+        });
+
+        Schema::table('cities_municipalities', function (Blueprint $table) {
+            $table->string('old_name')->nullable()->after('name');
+        });
+
+        Schema::table('barangays', function (Blueprint $table) {
+            $table->string('old_name')->nullable()->after('name');
         });
     }
 
     public function down(): void
     {
+        Schema::table('regions', function (Blueprint $table) {
+            $table->dropColumn(['old_name']);
+        });
+
         Schema::table('provinces', function (Blueprint $table) {
             $table->dropIndex(['is_elevated_city']);
             $table->dropIndex(['is_capital']);
-            $table->dropColumn(['is_elevated_city', 'is_capital']);
+            $table->dropColumn(['is_elevated_city', 'is_capital', 'old_name']);
+        });
+
+        Schema::table('cities_municipalities', function (Blueprint $table) {
+            $table->dropColumn(['old_name']);
+        });
+
+        Schema::table('barangays', function (Blueprint $table) {
+            $table->dropColumn(['old_name']);
         });
     }
 };
@@ -79,6 +115,7 @@ class Province extends Model
     protected $fillable = [
         'code',
         'name',
+        'old_name',
         'correspondence_code',
         'geographic_level',
         'is_capital',
@@ -129,9 +166,10 @@ protected function processRow(array $headers, array $rowData): void
 
     $code = $data['10-digit PSGC'] ?? '';
     $name = $data['Name'] ?? '';
+    $oldName = $data['Old Name'] ?? '';
     $correspondenceCode = $data['Correspondence Code'] ?? '';
     $geographicLevel = trim($data['Geographic Level'] ?? '');
-    // Note: is_capital detection from Excel file is not working - implementation pending
+    $status = $data['Status'] ?? '';
 
     if (empty($code) || empty($name) || empty($geographicLevel)) {
         return;
@@ -157,13 +195,14 @@ protected function processRow(array $headers, array $rowData): void
     // Check if this is NCR (Region 13)
     $isNCR = $regionPrefix === '13';
 
-    // TODO: Implement is_capital detection from Excel data
-    // $isCapital = $this->detectCapitalStatus($data);
+    // Detect capital status from 'Status' column
+    $isCapital = stripos(trim($status), 'Capital') !== false;
 
     if ($normalizedLevel === 'reg' || $normalizedLevel === 'region') {
         $this->regions[$code] = [
             'code' => $code,
             'name' => $name,
+            'old_name' => $oldName,
             'correspondence_code' => $correspondenceCode,
             'geographic_level' => $mappedLevel,
         ];
@@ -171,9 +210,10 @@ protected function processRow(array $headers, array $rowData): void
         $this->provinces[$code] = [
             'code' => $code,
             'name' => $name,
+            'old_name' => $oldName,
             'correspondence_code' => $correspondenceCode,
             'geographic_level' => $mappedLevel,
-            'is_capital' => false, // TODO: Implement detection
+            'is_capital' => $isCapital,
             'is_elevated_city' => false,
         ];
     } elseif (in_array($normalizedLevel, ['city', 'mun', 'municipality', 'submun'], true)) {
@@ -182,9 +222,10 @@ protected function processRow(array $headers, array $rowData): void
             $this->provinces[$code] = [
                 'code' => $code,
                 'name' => $name,
+                'old_name' => $oldName,
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel, // Keep as 'City' or 'Municipality'
-                'is_capital' => false, // TODO: Implement detection
+                'is_capital' => $isCapital,
                 'is_elevated_city' => true, // Flag this as elevated
             ];
         } else {
@@ -192,15 +233,17 @@ protected function processRow(array $headers, array $rowData): void
             $this->citiesMunicipalities[$code] = [
                 'code' => $code,
                 'name' => $name,
+                'old_name' => $oldName,
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
-                'is_capital' => false, // TODO: Implement detection
+                'is_capital' => $isCapital,
             ];
         }
     } elseif ($normalizedLevel === 'bgy' || $normalizedLevel === 'barangay') {
         $this->barangays[$code] = [
             'code' => $code,
             'name' => $name,
+            'old_name' => $oldName,
             'correspondence_code' => $correspondenceCode,
             'geographic_level' => $mappedLevel,
         ];
@@ -254,6 +297,7 @@ protected function saveProvinces(): void
             ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
             [
                 'name' => $province['name'],
+                'old_name' => $province['old_name'] ?? null,
                 'correspondence_code' => $province['correspondence_code'],
                 'geographic_level' => $province['geographic_level'],
                 'is_capital' => $province['is_capital'] ?? false,
@@ -282,6 +326,7 @@ protected function saveCitiesMunicipalities(): void
 
         $data = [
             'name' => $cityMunicipality['name'],
+            'old_name' => $cityMunicipality['old_name'] ?? null,
             'correspondence_code' => $cityMunicipality['correspondence_code'],
             'geographic_level' => $cityMunicipality['geographic_level'],
             'region_id' => $cityMunicipality['region_id'] ?? null,
@@ -331,31 +376,7 @@ protected function saveCitiesMunicipalities(): void
 
 ### 5. Known Issues
 
-#### Issue: is_capital Not Detected Upon Importation
-
-**Status:** **Not Implemented - Pending Implementation**
-
-**Description:**
-The `is_capital` column on both `provinces` and `cities_municipalities` tables is currently not being populated during import. All records will have `is_capital` set to `false` by default.
-
-**Impact:**
-- Capital cities and municipalities cannot be identified from data
-- Applications requiring capital information will not function correctly
-- Administrative queries will be incomplete
-
-**Root Cause:**
-- The Excel file column containing capital status information needs to be identified
-- The import logic in `ImportPsgcData::processRow()` needs to be updated to parse capital status from Excel data
-- Detection logic for capital status has not been implemented yet
-
-**Next Steps:**
-1. Identify the Excel column that contains capital status information
-2. Update the `processRow()` method to extract capital status from that column
-3. Implement detection logic (likely checking for "Capital" keyword in column value)
-4. Update test cases to verify capital detection
-5. Re-import data to populate the `is_capital` field correctly
-
-**Note:** This is a future implementation task. For now, all `is_capital` values will remain `false`.
+#### Issue: None
 
 ### 6. Test Cases
 
@@ -364,16 +385,17 @@ The `is_capital` column on both `provinces` and `cities_municipalities` tables i
 - **Expected Behavior:**
   - Stored in `provinces` table
   - `is_elevated_city` = `true`
-  - `is_capital` = `false` (see known issue)
+  - `is_capital` = `true` (capital of NCR)
   - `geographic_level` = `"City"`
   - `region_id` = NCR region ID
+  - `old_name` = old name value from Excel
 - **Verification:**
   ```php
   $manila = Province::where('code', '1375040000')->first();
   $this->assertTrue($manila->is_elevated_city);
   $this->assertEquals('City', $manila->geographic_level);
-  // Note: is_capital test will fail until implementation is done
-  // $this->assertTrue($manila->is_capital);
+  $this->assertTrue($manila->is_capital);
+  $this->assertIsString($manila->old_name);
   ```
 
 #### Test Case 2: Non-NCR Province
@@ -381,14 +403,16 @@ The `is_capital` column on both `provinces` and `cities_municipalities` tables i
 - **Expected Behavior:**
   - Stored in `provinces` table
   - `is_elevated_city` = `false`
-  - `is_capital` = `false` (see known issue)
+  - `is_capital` = `false`
   - `geographic_level` = `"Province"`
   - `region_id` = Region I (01) ID
+  - `old_name` = old name value from Excel
 - **Verification:**
   ```php
   $ilocosNorte = Province::where('code', '0128000000')->first();
   $this->assertFalse($ilocosNorte->is_elevated_city);
   $this->assertEquals('Province', $ilocosNorte->geographic_level);
+  $this->assertIsString($ilocosNorte->old_name);
   ```
 
 #### Test Case 3: Non-NCR City
@@ -396,15 +420,18 @@ The `is_capital` column on both `provinces` and `cities_municipalities` tables i
 - **Expected Behavior:**
   - Stored in `cities_municipalities` table
   - `geographic_level` = `"City"`
-  - `is_capital` = `false` (see known issue)
+  - `is_capital` = `true` (capital of Ilocos Norte)
   - `region_id` = Region I (01) ID
   - `province_id` = Ilocos Norte province ID
+  - `old_name` = old name value from Excel
 - **Verification:**
   ```php
   $laoag = CityMunicipality::where('code', '0128010000')->first();
   $this->assertNotNull($laoag);
   $this->assertEquals('City', $laoag->geographic_level);
   $this->assertEquals('0128000000', $laoag->province->code);
+  $this->assertTrue($laoag->is_capital);
+  $this->assertIsString($laoag->old_name);
   ```
 
 #### Test Case 4: NCR Barangay
@@ -414,50 +441,62 @@ The `is_capital` column on both `provinces` and `cities_municipalities` tables i
   - `region_id` = NCR region ID
   - `province_id` = Manila (elevated city) ID
   - `city_municipality_id` = NULL
+  - `old_name` = old name value from Excel
 - **Verification:**
   ```php
   $barangay = Barangay::where('code', '1375040001')->first();
   $this->assertNull($barangay->city_municipality_id);
   $this->assertNotNull($barangay->province);
   $this->assertTrue($barangay->province->is_elevated_city);
+  $this->assertIsString($barangay->old_name);
   ```
 
 ### 7. Migration Plan
 
 #### Phase 1: Database Schema Update
-1. Create migration to add `is_elevated_city` and `is_capital` columns to the provinces table
+1. Create migration to add `is_elevated_city`, `is_capital`, and `old_name` columns to:
+   - `regions` table (only `old_name`)
+   - `provinces` table (`is_elevated_city`, `is_capital`, `old_name`)
+   - `cities_municipalities` table (`old_name`)
+   - `barangays` table (`old_name`)
 2. Run migration: `php artisan migrate`
 
 #### Phase 2: Model Updates
-1. Update the Province model with new fillable fields and scopes
-2. Update the CityMunicipality model with `is_capital` in fillable (already exists)
-3. Add casts for boolean fields
+1. Update the Region model to include `old_name` in fillable
+2. Update the Province model with new fillable fields (`old_name`, `is_capital`, `is_elevated_city`) and scopes
+3. Update the CityMunicipality model to include `old_name` and `is_capital` in fillable
+4. Update the Barangay model to include `old_name` in fillable
+5. Add casts for boolean fields
+6. Update the CityMunicipality model with `is_capital` in fillable (already exists)
+7. Add casts for boolean fields
 
 #### Phase 3: Import Logic Updates
-1. Update `ImportPsgcData::processRow()` to detect NCR and elevate cities
-2. Update `ImportPsgcData::saveProvinces()` to include new columns
-3. Update `ImportPsgcData::saveCitiesMunicipalities()` to handle `is_capital`
+1. Update `ImportPsgcData::processRow()` to:
+   - Extract `Old Name` from Excel data
+   - Detect NCR and elevate cities
+   - Detect capital status from 'Status' column (checks for 'Capital' value)
+2. Update `ImportPsgcData::saveRegions()` to include `old_name`
+3. Update `ImportPsgcData::saveProvinces()` to include new columns (`old_name`, `is_capital`, `is_elevated_city`)
+4. Update `ImportPsgcData::saveCitiesMunicipalities()` to handle `old_name` and `is_capital`
+5. Update `ImportPsgcData::saveBarangays()` to include `old_name`
 
 #### Phase 4: Testing
 1. Run PSGC sync with test data
 2. Verify NCR cities are in the provinces table
 3. Verify non-NCR cities are in the cities_municipalities table
 4. Verify relationships are correctly established
-5. Run automated tests
+5. Verify `old_name` values are preserved for all levels (regions, provinces, cities/municipalities, barangays)
+6. Verify `is_capital` is correctly set based on 'Status' column value
+7. Run automated tests
 
-#### Phase 5: Capital Detection Implementation (Future)
-1. Identify the Excel column with capital status
-2. Implement `detectCapitalStatus()` helper method
-3. Update `processRow()` to call helper and set `is_capital`
-4. Test capital detection
-5. Re-import data to populate the correct capital status
+
 
 ### 8. Backward Compatibility
 
 This change is **backward compatible** for queries:
 
 - Existing queries fetching from the `provinces` table will continue to work
-- The new columns have default values of `false`
+- The new columns have default values of `false` for boolean fields and `null` for `old_name`
 - Applications that don't need to distinguish can ignore these fields
 - Applications that need to exclude NCR cities can use `actualProvinces()` scope
 
@@ -467,12 +506,12 @@ This change is **backward compatible** for queries:
 - Querying `Province::actualProvinces()` and `Province::capital()` will use indexes
 - No significant performance impact expected
 
-### 10. Future Enhancements
+### Future Enhancements
 
-- Implement capital status detection from Excel file
 - Consider adding a computed/serialized column for "administrative level" that abstracts elevation logic
 - Add helper methods to easily get all first-level administrative divisions (provinces + elevated cities)
 - Consider API endpoints that return unified province/city lists
+- Add validation for old_name format consistency
 
 ---
 
@@ -486,6 +525,8 @@ This change is **backward compatible** for queries:
 ### Related Files
 - `app/Models/Province.php` - Province model with elevation fields
 - `app/Models/CityMunicipality.php` - City/Municipality model
+- `app/Models/Region.php` - Region model
+- `app/Models/Barangay.php` - Barangay model
 - `app/Actions/Psgc/ImportPsgcData.php` - Import logic
 - `database/migrations/*` - Database migrations
 
@@ -494,12 +535,24 @@ For implementation assistance, refer to the Agent Apollo documentation at `.clau
 
 ---
 
-**Document Version:** 1.0
-**Last Updated:** 2026-01-14
+**Document Version:** 1.1
+**Last Updated:** 2026-01-15
 **Status:** Draft
 **Author:** PSA-PSGC Team
 
 ## Changelog
+
+### v1.1 (2026-01-15)
+- Added `old_name` column to regions, provinces, cities_municipalities, and barangays tables
+- Implemented capital status detection from 'Status' column in Excel file
+- Updated migration file to include all new columns
+- Updated model fillable arrays to include `old_name`
+- Updated import logic to extract `old_name` from Excel data
+- Updated import logic to detect capital status using 'Status' column
+- Updated test cases to include `old_name` verification
+- Updated test cases to include `is_capital` verification
+- Removed "Known Issue" for is_capital as it is now implemented
+- Updated migration plan phases
 
 ### v1.0 (2026-01-14)
 - Initial specification for NCR cities elevation

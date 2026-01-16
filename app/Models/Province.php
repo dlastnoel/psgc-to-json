@@ -10,11 +10,21 @@ class Province extends Model
 {
     protected $fillable = [
         'region_id',
+        'region_code',
+        'province_code',
         'code',
         'name',
+        'old_name',
         'correspondence_code',
         'geographic_level',
+        'is_capital',
+        'is_elevated_city',
         'psgc_version_id',
+    ];
+
+    protected $casts = [
+        'is_capital' => 'boolean',
+        'is_elevated_city' => 'boolean',
     ];
 
     public function region(): BelongsTo
@@ -56,5 +66,29 @@ class Province extends Model
     public function scopeVersion($query, int $versionId)
     {
         return $query->where('psgc_version_id', $versionId);
+    }
+
+    /**
+     * Scope to get elevated NCR cities.
+     */
+    public function scopeElevatedCities($query)
+    {
+        return $query->where('is_elevated_city', true);
+    }
+
+    /**
+     * Scope to get actual provinces (not elevated cities).
+     */
+    public function scopeActualProvinces($query)
+    {
+        return $query->where('is_elevated_city', false);
+    }
+
+    /**
+     * Scope to get capital provinces/cities.
+     */
+    public function scopeCapital($query)
+    {
+        return $query->where('is_capital', true);
     }
 }
