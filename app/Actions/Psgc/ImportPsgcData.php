@@ -70,7 +70,6 @@ class ImportPsgcData
         $this->parseSheet($sheet);
         $this->extractVersionInfo();
         $this->createPsgcVersion();
-        $this->establishRelationships();
         $this->saveData();
         $this->updatePsgcVersionCounts();
         $this->markVersionAsCurrent();
@@ -148,6 +147,20 @@ class ImportPsgcData
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
             ];
+
+            // Create a virtual province for NCR when we encounter NCR region
+            $regionPrefix = substr($code, 0, 2);
+            if ($regionPrefix === '13') { // NCR region code
+                $virtualProvinceCode = '1300000000'; // Virtual province code for NCR
+                $this->provinces[$virtualProvinceCode] = [
+                    'code' => $virtualProvinceCode,
+                    'name' => 'Metro Manila',
+                    'correspondence_code' => $correspondenceCode,
+                    'geographic_level' => 'Province',
+                    'is_elevated_city' => false,
+                    'is_virtual' => true,
+                ];
+            }
         } elseif ($normalizedLevel === 'prov' || $normalizedLevel === 'province') {
             $this->provinces[$code] = [
                 'code' => $code,
@@ -155,6 +168,7 @@ class ImportPsgcData
                 'correspondence_code' => $correspondenceCode,
                 'geographic_level' => $mappedLevel,
                 'is_elevated_city' => false,
+                'is_virtual' => false,
             ];
         } elseif (in_array($normalizedLevel, ['city', 'mun', 'municipality', 'submun'], true)) {
             $this->citiesMunicipalities[$code] = [
@@ -164,15 +178,20 @@ class ImportPsgcData
                 'geographic_level' => $mappedLevel,
             ];
 
-            // If this is an elevated city, also add it to provinces
+            // If this is an elevated city (HUC/ICC), also add it to provinces
+            // for non-NCR regions only (NCR uses the virtual province approach)
             if ($isElevatedCity) {
-                $this->provinces[$code] = [
-                    'code' => $code,
-                    'name' => $name,
-                    'correspondence_code' => $correspondenceCode,
-                    'geographic_level' => 'Province',
-                    'is_elevated_city' => true,
-                ];
+                $regionPrefix = substr($code, 0, 2);
+                if ($regionPrefix !== '13') { // Not NCR
+                    $this->provinces[$code] = [
+                        'code' => $code,
+                        'name' => $name,
+                        'correspondence_code' => $correspondenceCode,
+                        'geographic_level' => 'Province',
+                        'is_elevated_city' => true,
+                        'is_virtual' => false,
+                    ];
+                }
             }
         } elseif ($normalizedLevel === 'bgy' || $normalizedLevel === 'barangay') {
             $this->barangays[$code] = [
@@ -184,7 +203,7 @@ class ImportPsgcData
         }
     }
 
-    protected function establishRelationships(): void
+    protected function establishProvinceRegionRelationships(): void
     {
         // Establish province -> region relationships using PSGC code prefix
         foreach ($this->provinces as $code => &$province) {
@@ -195,21 +214,18 @@ class ImportPsgcData
                 $province['region_id'] = $this->regions[$regionCode]['id'] ?? null;
             }
         }
+    }
 
-        // Establish city -> region and city -> province relationships
+    protected function establishCityMunicipalityRelationships(): void
+    {
+        // Establish city -> region relationships (province relationships handled in saveCitiesMunicipalities)
         foreach ($this->citiesMunicipalities as $code => &$cityMunicipality) {
             $regionPrefix = substr($code, 0, 2); // First 2 digits = region
-            $provincePrefix = substr($code, 0, 6); // First 6 digits = province
 
             $regionCode = $regionPrefix . '00000000'; // Match 10-digit region code
-            $provinceCode = $provincePrefix . '0000'; // Match 10-digit province code
 
             if (isset($this->regions[$regionCode])) {
                 $cityMunicipality['region_id'] = $this->regions[$regionCode]['id'] ?? null;
-            }
-
-            if (isset($this->provinces[$provinceCode])) {
-                $cityMunicipality['province_id'] = $this->provinces[$provinceCode]['id'] ?? null;
             }
         }
     }
@@ -244,8 +260,9 @@ class ImportPsgcData
     {
         DB::transaction(function () {
             $this->saveRegions();
-            $this->establishRelationships();
+            $this->establishProvinceRegionRelationships();
             $this->saveProvinces();
+            $this->establishCityMunicipalityRelationships();
             $this->saveCitiesMunicipalities();
             $this->establishBarangayRelationships();
             $this->saveBarangays();
@@ -278,9 +295,9 @@ class ImportPsgcData
     {
         foreach ($this->provinces as $code => &$province) {
             $province['psgc_version_id'] = $this->psgcVersion->id;
-            
+
             $regionCode = substr($code, 0, 2) . '00000000';
-            
+
             $created = Province::updateOrCreate(
                 ['code' => $code, 'psgc_version_id' => $this->psgcVersion->id],
                 [
@@ -291,6 +308,7 @@ class ImportPsgcData
                     'region_code' => $regionCode,
                     'province_code' => $code,
                     'is_elevated_city' => $province['is_elevated_city'] ?? false,
+                    'is_virtual' => $province['is_virtual'] ?? false,
                     'psgc_version_id' => $this->psgcVersion->id,
                 ]
             );
@@ -309,45 +327,41 @@ class ImportPsgcData
             $cityMunicipality['psgc_version_id'] = $this->psgcVersion->id;
 
             // Determine province_id based on location:
-            // 1. NCR cities/municipalities: Use elevated city's ID if matches
-            // 2. Non-NCR cities: Use traditional province code
+            // 1. NCR cities/municipalities: Use virtual NCR province (1300000000)
+            // 2. Non-NCR elevated cities (HUC/ICC): Reference themselves as province
+            // 3. Non-NCR regular cities: Use traditional province code
             $isNCR = substr($code, 0, 2) === '13'; // NCR region code
             $provinceId = null;
             $provinceCode = null;
 
             if ($isNCR) {
-                // For NCR, check if this city itself is an elevated city
-                // Elevated cities (HUC/ICC) are also listed as provinces, so they reference themselves
-                $found = false;
+                // For NCR, all cities/municipalities use the virtual NCR province
+                $virtualProvinceCode = '1300000000';
+                if (isset($this->provinces[$virtualProvinceCode])) {
+                    $provinceId = $this->provinces[$virtualProvinceCode]['id'];
+                    $provinceCode = $virtualProvinceCode;
+                }
+            } else {
+                // Check if this is an elevated city (HUC/ICC) for non-NCR
+                $isElevatedCity = false;
                 foreach ($this->provinces as $provCode => $province) {
                     if ($provCode === $code && ($province['is_elevated_city'] ?? false)) {
                         $provinceId = $province['id'];
                         $provinceCode = $provCode;
-                        $found = true;
+                        $isElevatedCity = true;
                         break;
                     }
                 }
-                // If not an elevated city, check if it's a district under an elevated city
-                // Match based on first 4 digits (city prefix)
-                if (!$found) {
-                    $cityPrefix = substr($code, 0, 4); // First 4 digits (city prefix)
-                    foreach ($this->provinces as $provCode => $province) {
-                        if (substr($provCode, 0, 4) === $cityPrefix && ($province['is_elevated_city'] ?? false)) {
-                            $provinceId = $province['id'];
-                            $provinceCode = $provCode;
-                            $found = true;
-                            break;
-                        }
-                    }
-                }
-            } else {
-                // For Non-NCR, use traditional province
-                // Province code format: region (2 digits) + province (2 digits) + '000000'
-                // Example: City 0110100000 -> Province 0110000000 (Region 01, Province 01)
-                $provinceCode = substr($code, 0, 2) . substr($code, 2, 2) . '000000';
 
-                if (isset($this->provinces[$provinceCode])) {
-                    $provinceId = $this->provinces[$provinceCode]['id'];
+                // For regular cities (not elevated), use traditional province
+                if (!$isElevatedCity) {
+                    // Province code format: region (2 digits) + province (2 digits) + '000000'
+                    // Example: City 0110100000 -> Province 0110000000 (Region 01, Province 01)
+                    $provinceCode = substr($code, 0, 2) . substr($code, 2, 2) . '000000';
+
+                    if (isset($this->provinces[$provinceCode])) {
+                        $provinceId = $this->provinces[$provinceCode]['id'];
+                    }
                 }
             }
 

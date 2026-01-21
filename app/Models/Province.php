@@ -19,12 +19,14 @@ class Province extends Model
         'geographic_level',
         'is_capital',
         'is_elevated_city',
+        'is_virtual',
         'psgc_version_id',
     ];
 
     protected $casts = [
         'is_capital' => 'boolean',
         'is_elevated_city' => 'boolean',
+        'is_virtual' => 'boolean',
     ];
 
     public function region(): BelongsTo
@@ -90,5 +92,21 @@ class Province extends Model
     public function scopeCapital($query)
     {
         return $query->where('is_capital', true);
+    }
+
+    /**
+     * Scope to get virtual provinces (e.g., NCR virtual province).
+     */
+    public function scopeVirtual($query)
+    {
+        return $query->where('is_virtual', true);
+    }
+
+    /**
+     * Scope to get real provinces only (not virtual).
+     */
+    public function scopeRealProvinces($query)
+    {
+        return $query->where('is_virtual', false);
     }
 }
